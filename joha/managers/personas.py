@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from joha.config.cache import LRUCache
@@ -18,6 +19,9 @@ REGISTRY_FILE = os.path.join(PERSONAS_DIR, "personas.json")
 RENSHE_FILE_LEGACY = os.path.join(STORAGE_ROOT, "renshe.txt")
 CACHE_TTL = 600
 _ACTIVE_PERSONA: str = "joha"
+
+# 人设名称白名单：字母、数字、下划线、连字符、中日韩文字；避免路径穿越/非法文件名
+_PERSONA_NAME_RE = re.compile(r"[\w-]{1,64}")
 
 
 class PersonaTraits:
@@ -237,6 +241,7 @@ class PersonaManager:
 
     def _load_registry(self) -> None:
         """从 personas.json 加载注册表"""
+        global _ACTIVE_PERSONA
         path = self._registry_path()
         if os.path.exists(path):
             try:
@@ -244,10 +249,12 @@ class PersonaManager:
                     data = json.load(f)
                 self._bindings = data.pop("_bindings", {})
                 data.pop("_version", None)
-                data.pop("_active", None)
+                active = data.pop("_active", None)
                 self._personas = data
                 if "joha" not in self._personas:
                     self._init_default()
+                if isinstance(active, str) and active in self._personas:
+                    _ACTIVE_PERSONA = active
             except Exception as e:
                 logger.error(f"加载人设注册表失败: {e}")
                 self._personas = {}
@@ -386,6 +393,9 @@ class PersonaManager:
         if name.startswith("_"):
             logger.error("人设名称不能以 '_' 开头")
             return False
+        if not _PERSONA_NAME_RE.fullmatch(name):
+            logger.error(f"人设名称含非法字符: {name}")
+            return False
         if renshe_text:
             try:
                 os.makedirs(PERSONAS_DIR, exist_ok=True)
@@ -439,6 +449,9 @@ class PersonaManager:
             return False
         if old_name == "joha":
             logger.error("默认人设 'joha' 不能重命名")
+            return False
+        if not _PERSONA_NAME_RE.fullmatch(new_name):
+            logger.error(f"人设名称含非法字符: {new_name}")
             return False
         info = self._personas.pop(old_name)
         info["file"] = f"{new_name}.txt"

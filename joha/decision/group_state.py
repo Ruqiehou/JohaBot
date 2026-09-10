@@ -33,6 +33,9 @@ class GroupState:
     last_topic_update: float = 0.0
     _db_sync_count: int = 0
     
+    # 持久化话题的最大数量，超出后仅保留计数最高的
+    MAX_PERSISTENT_TOPICS: int = 200
+
     # 用于JSON序列化的字段
     persistent_topics: Dict[str, int] = field(default_factory=dict)
 
@@ -88,7 +91,9 @@ class GroupState:
         # 注意：实际保存在 GroupStateManager.record_feedback 中处理
 
     def get_top_topics(self, top_k: int = 10) -> List[Tuple[str, int]]:
-        return self.learned_topics.most_common(top_k)
+        combined = Counter(self.persistent_topics)
+        combined.update(self.learned_topics)
+        return combined.most_common(top_k)
 
     def update_topics(self, text: str):
         words = re.findall(r'[\u4e00-\u9fff]{2,4}', text)
@@ -128,7 +133,8 @@ class GroupState:
         state.last_msg_from_bot = data.get("last_msg_from_bot", False)
         state.last_active_ts = data.get("last_active_ts", 0.0)
         state.persistent_topics = data.get("persistent_topics", {})
-        state.learned_topics = Counter(state.persistent_topics)
+        # learned_topics 仅保存本次运行新增的话题，避免与持久化数据重复计数
+        state.learned_topics = Counter()
         return state
 
     def _sync_to_file(self):
@@ -143,17 +149,27 @@ class GroupState:
             self.persistent_topics[topic] = self.persistent_topics.get(topic, 0) + count
         self.learned_topics.clear()
 
+        # 剪枝：仅保留计数最高的若干话题，避免无界增长
+        if len(self.persistent_topics) > self.MAX_PERSISTENT_TOPICS:
+            top = sorted(
+                self.persistent_topics.items(),
+                key=lambda kv: kv[1],
+                reverse=True,
+            )[:self.MAX_PERSISTENT_TOPICS]
+            self.persistent_topics = dict(top)
+
 
 class GroupStateManager:
 
     def __init__(self):
         self._states: Dict[str, GroupState] = {}
-        self._file_lock = threading.Lock()
+        # 可重入锁：既保护 _states 的并发读写，也串行化文件读写
+        self._lock = threading.RLock()
         self._load_from_file()
     
     def _load_from_file(self):
         """从文件加载群组状态"""
-        with self._file_lock:
+        with self._lock:
             try:
                 if os.path.exists(GROUP_STATE_FILE):
                     with open(GROUP_STATE_FILE, "r", encoding="utf-8") as f:
@@ -171,7 +187,7 @@ class GroupStateManager:
 
     def _save_to_file(self):
         """保存所有群组状态到文件"""
-        with self._file_lock:
+        with self._lock:
             try:
                 storage_dir = os.path.dirname(GROUP_STATE_FILE)
                 os.makedirs(storage_dir, exist_ok=True)
@@ -187,10 +203,11 @@ class GroupStateManager:
                 tprint("error", f"[GroupState] 保存群组状态失败: {e}")
 
     def get(self, group_id: str) -> GroupState:
-        if group_id not in self._states:
-            state = GroupState(group_id=group_id)
-            self._states[group_id] = state
-        return self._states[group_id]
+        with self._lock:
+            if group_id not in self._states:
+                state = GroupState(group_id=group_id)
+                self._states[group_id] = state
+            return self._states[group_id]
 
     def record_message(self, group_id: str, user_id: str, text: str, is_bot: bool = False):
         state = self.get(group_id)
@@ -211,20 +228,22 @@ class GroupStateManager:
 
     def get_context_summary(self, group_id: str, n: int = 5) -> str:
         state = self.get(group_id)
-        recent = list(state.message_buffer)[-n:]
-        lines = []
-        for _, meta in recent:
-            prefix = "[Bot]" if meta.get("is_bot") else f"[U{meta['user_id'][-4:]}]"
-            lines.append(f"{prefix}: {meta['text'][:30]}")
-        return "\n".join(lines)
+        with self._lock:
+            recent = list(state.message_buffer)[-n:]
+            lines = []
+            for _, meta in recent:
+                prefix = "[Bot]" if meta.get("is_bot") else f"[U{meta['user_id'][-4:]}]"
+                lines.append(f"{prefix}: {meta['text'][:30]}")
+            return "\n".join(lines)
 
     def get_stats(self) -> Dict:
-        return {
-            "total_groups": len(self._states),
-            "total_messages": sum(s.total_messages for s in self._states.values()),
-            "total_bot_replies": sum(s.bot_replies for s in self._states.values()),
-            "avg_msg_per_min": sum(s.msg_per_minute for s in self._states.values()) / max(len(self._states), 1),
-        }
+        with self._lock:
+            return {
+                "total_groups": len(self._states),
+                "total_messages": sum(s.total_messages for s in self._states.values()),
+                "total_bot_replies": sum(s.bot_replies for s in self._states.values()),
+                "avg_msg_per_min": sum(s.msg_per_minute for s in self._states.values()) / max(len(self._states), 1),
+            }
 
 
 group_state_manager = GroupStateManager()

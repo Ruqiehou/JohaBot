@@ -56,45 +56,37 @@ class MessageQueueManager:
         初始化消息队列管理器
         
         Args:
-            merge_window: 合并窗口时间（秒），默认从配置文件读取， fallback 到60秒
+            merge_window: 合并窗口时间（秒），显式传入时覆盖配置文件
         """
+        # 默认值（配置文件缺失时使用）
+        self.merge_window = 120.0
+        self.max_queue_size = 5
+        self.min_messages_to_merge = 2
+        self.enabled = True
+
         # 从配置文件读取设置
-        if merge_window is None:
-            try:
-                from joha.config.config_manager import config
-                queue_config = config.get('message_queue', {})
-                merge_window = queue_config.get('merge_window', 60.0)
-                self.max_queue_size = queue_config.get('max_queue_size', 5)
-                self.min_messages_to_merge = queue_config.get('min_messages_to_merge', 2)
-                self.enabled = queue_config.get('enabled', True)
-            except Exception:
-                merge_window = 60.0
-                self.max_queue_size = 5
-                self.min_messages_to_merge = 2
-                self.enabled = True
-        else:
-            self.max_queue_size = 5
-            self.min_messages_to_merge = 2
-            self.enabled = True
+        try:
+            from joha.config.config_manager import config
+            queue_config = config.get('message_queue', {}) or {}
+            self.merge_window = queue_config.get('merge_window', self.merge_window)
+            self.max_queue_size = queue_config.get('max_queue_size', self.max_queue_size)
+            self.min_messages_to_merge = queue_config.get('min_messages_to_merge', self.min_messages_to_merge)
+            self.enabled = queue_config.get('enabled', self.enabled)
+        except Exception:
+            pass
+
+        # 显式传入的 merge_window 优先于配置文件
+        if merge_window is not None:
+            self.merge_window = merge_window
         
-        self.merge_window = merge_window
         # 群组的消息队列: {group_id: [QueuedMessage]}
         self.message_queues: Dict[str, List[QueuedMessage]] = defaultdict(list)
-        # 正在处理的消息锁
-        self.processing_locks: Dict[str, asyncio.Lock] = {}
         
-        tprint("info", f"[消息队列] 已初始化，合并窗口: {merge_window}秒, 最大队列大小: {self.max_queue_size}, 最小合并数: {self.min_messages_to_merge}")
+        tprint("info", f"[消息队列] 已初始化，合并窗口: {self.merge_window}秒, 最大队列大小: {self.max_queue_size}, 最小合并数: {self.min_messages_to_merge}")
     
     def _get_queue_key(self, user_id: str, group_id: str) -> str:
         """获取队列键（仅使用群组ID）"""
         return str(group_id)
-    
-    def _get_lock(self, user_id: str, group_id: str) -> asyncio.Lock:
-        """获取或创建处理锁"""
-        key = self._get_queue_key(user_id, group_id)
-        if key not in self.processing_locks:
-            self.processing_locks[key] = asyncio.Lock()
-        return self.processing_locks[key]
     
     async def add_message(
         self,
@@ -383,5 +375,5 @@ class MessageQueueManager:
         return total
 
 
-# 全局消息队列管理器实例
-message_queue_manager = MessageQueueManager(merge_window=120.0)
+# 全局消息队列管理器实例（参数从 config.json 的 message_queue 段读取）
+message_queue_manager = MessageQueueManager()

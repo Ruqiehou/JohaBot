@@ -89,14 +89,15 @@ class NapCatClient(IClient):
 
     @staticmethod
     def _tcp_probe(host: str, port: int, timeout: float = 2.0) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((host, port))
-            sock.close()
             return True
         except (socket.timeout, ConnectionRefusedError, OSError):
             return False
+        finally:
+            sock.close()
 
     def check_connection(self) -> bool:
         host, port = self._parse_ws_endpoint(self.ws_url)
@@ -185,7 +186,7 @@ class NapCatClient(IClient):
         return False
     
     async def disconnect(self, force: bool = False) -> None:
-        if not self._connected and not force:
+        if not force and not self._connected and not self._processing_task and not self._listen_task and not self.ws:
             return
         
         self._connected = False
@@ -344,8 +345,8 @@ class NapCatClient(IClient):
                 await asyncio.sleep(retry_delay)
         
         if last_error:
-            raise last_error
-        raise Exception(f"API调用失败: 未知错误 (action={action})")
+            raise RuntimeError(f"API调用失败 (action={action}): {last_error}") from last_error
+        raise RuntimeError(f"API调用失败: 未知错误 (action={action})")
 
     def get_performance_stats(self) -> Dict[str, Union[int, float, bool]]:
         stats: Dict[str, Union[int, float, bool]] = dict(self._perf_stats.copy())

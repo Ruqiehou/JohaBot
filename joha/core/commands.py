@@ -3,6 +3,7 @@
 将命令处理逻辑从main.py分离出来
 """
 from typing import Optional
+import asyncio
 
 from joha.core.service import message_service
 from joha.managers.style_learner import style_learner
@@ -315,7 +316,8 @@ class CommandHandler:
             if not query:
                 response = "用法：/search <搜索关键词>"
             else:
-                response = tool_registry.dispatch("search", query)
+                # 工具调用包含同步网络请求，放到线程池执行避免阻塞事件循环
+                response = await asyncio.to_thread(tool_registry.dispatch, "search", query)
 
         elif cmd in ["/webpage", "/wp", "/fetch"]:
             from joha.core.tool_registry import tool_registry
@@ -325,7 +327,8 @@ class CommandHandler:
             if not url:
                 response = "用法：/webpage <URL>"
             else:
-                response = tool_registry.dispatch("webpage", url)
+                # 工具调用包含同步网络请求，放到线程池执行避免阻塞事件循环
+                response = await asyncio.to_thread(tool_registry.dispatch, "webpage", url)
 
         # ── 多人设管理 ──
         elif cmd in ["/人设列表", "/personas"]:

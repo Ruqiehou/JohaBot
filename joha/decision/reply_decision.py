@@ -118,7 +118,6 @@ class MessageContext:
     group_id: str = ""
     is_at_bot: bool = False
     reply_to_bot: bool = False
-    has_command_prefix: bool = False
     is_pure_media: bool = False
     is_private: bool = False
     group_msg_per_minute: float = 5.0
@@ -267,8 +266,6 @@ def compute_reply_prob(ctx: MessageContext, cooldown: CooldownManager = cooldown
         logit += _get_adjusted_weight("at_bot")
     if ctx.reply_to_bot:
         logit += _get_adjusted_weight("reply_to_bot")
-    if ctx.has_command_prefix:
-        logit += _get_adjusted_weight("command")
     if _bot_nickname_in(ctx.text):
         logit += _get_adjusted_weight("nickname")
 
@@ -281,9 +278,6 @@ def compute_reply_prob(ctx: MessageContext, cooldown: CooldownManager = cooldown
         logit += _get_adjusted_weight("command") * ctx.intent_confidence
     elif ctx.intent == "emotion":
         logit += _get_adjusted_weight("emotion") * ctx.intent_confidence
-    elif ctx.intent == "programming":
-        extra = reply_cfg.threshold_adjustments.get("programming_extra_weight", 1.2)
-        logit += _get_adjusted_weight("question") * ctx.intent_confidence * extra
 
     spam_score = _compute_spam_score(ctx.text)
     if spam_score > sd["trigger_score"]:

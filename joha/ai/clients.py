@@ -14,6 +14,9 @@ from joha.config.logger import tprint
 class BaseAIClient(ABC):
     """AI 客户端基类"""
 
+    # 单次请求超时时间（秒），避免网络异常时长时间挂起
+    DEFAULT_TIMEOUT: float = 60.0
+
     def __init__(self, api_key: str, base_url: str, model: str):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/") if base_url else ""
@@ -43,7 +46,7 @@ class OpenAICompatibleClient(BaseAIClient):
     
     def __init__(self, api_key: str, base_url: str, model: str, enable_tools: bool = False):
         super().__init__(api_key, base_url, model)
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=self.DEFAULT_TIMEOUT)
         self.enable_tools = enable_tools
         self.tools = []
         self.tool_handlers = {}
@@ -117,29 +120,35 @@ class OpenAICompatibleClient(BaseAIClient):
                 }
             })
         
-        # 构建助手消息，保留 reasoning_content 如果存在
+        # 构建助手消息
         assistant_msg = {
             "role": "assistant",
             "tool_calls": tool_call_messages
         }
-        
-        # 检查原始响应中是否有 reasoning_content (针对 DeepSeek R1 等模型)
-        last_response = messages[-1] if messages else None
-        if hasattr(last_response, 'choices') and last_response.choices:
-            original_msg = last_response.choices[0].message
-            if hasattr(original_msg, 'reasoning_content') and original_msg.reasoning_content:
-                assistant_msg["reasoning_content"] = original_msg.reasoning_content
         
         messages.append(assistant_msg)
         
         # 执行工具并添加结果
         for tool_call in tool_calls:
             fn_name = tool_call.function.name
-            fn_args = json.loads(tool_call.function.arguments)
-            
+            try:
+                fn_args = json.loads(tool_call.function.arguments)
+            except (json.JSONDecodeError, TypeError) as e:
+                tprint("warning", f"[Tool] 解析 {fn_name} 参数失败: {e}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": f"工具参数解析失败: {e}"
+                })
+                continue
+
             # 执行工具
             if fn_name in self.tool_handlers:
-                result = self.tool_handlers[fn_name](fn_args)
+                try:
+                    result = self.tool_handlers[fn_name](fn_args)
+                except Exception as e:
+                    tprint("warning", f"[Tool] 执行 {fn_name} 失败: {e}")
+                    result = f"工具执行失败: {e}"
             else:
                 result = f"未知工具: {fn_name}"
             
@@ -157,7 +166,7 @@ class OpenAICompatibleClient(BaseAIClient):
             max_tokens=max_tokens
         )
         
-        return second_response.choices[0].message.content
+        return second_response.choices[0].message.content or ""
 
 
 class SimpleClassifierClient(BaseAIClient):
@@ -165,7 +174,7 @@ class SimpleClassifierClient(BaseAIClient):
     
     def __init__(self, api_key: str, base_url: str, model: str):
         super().__init__(api_key, base_url, model)
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=self.DEFAULT_TIMEOUT)
     
     def call_with_context(
         self,

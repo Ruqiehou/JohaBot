@@ -5,10 +5,21 @@
 import re
 import json
 import os
+import threading
+import functools
 from typing import Dict, Any, List, Optional
 from collections import Counter
 from joha.config.logger import johalog_logger
 from joha.config.paths import STYLES_DIR
+
+
+def _locked(method):
+    """使用实例的 _lock 串行化方法调用（可重入）"""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class StyleLearner:
@@ -16,6 +27,7 @@ class StyleLearner:
     def __init__(self):
         self.styles: Dict[str, Dict[str, Any]] = {}
         self._dirty: set = set()
+        self._lock = threading.RLock()
         os.makedirs(STYLES_DIR, exist_ok=True)
         self._load_all_from_disk()
         count = len(self.styles)
@@ -37,6 +49,7 @@ class StyleLearner:
         except Exception as e:
             johalog_logger.error(f"加载风格数据失败: {e}")
     
+    @_locked
     def _load_user_from_file(self, userid: str) -> Optional[Dict]:
         """从文件加载单个用户风格"""
         path = self._user_file_path(userid)
@@ -47,16 +60,43 @@ class StyleLearner:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             
-            # 转换 sentence_types 为 Counter
-            if "sentence_types" in data and isinstance(data["sentence_types"], dict):
-                data["sentence_types"] = Counter(data["sentence_types"])
+            if not isinstance(data, dict):
+                raise ValueError("风格文件内容不是字典")
             
-            self.styles[userid] = data
-            return data
+            # 补全缺失字段/修正类型，兼容旧版本或手工修改的文件
+            normalized = self._default_style()
+            if isinstance(data.get("message_count"), int):
+                normalized["message_count"] = data["message_count"]
+            if isinstance(data.get("avg_length"), (int, float)):
+                normalized["avg_length"] = float(data["avg_length"])
+            if isinstance(data.get("emoji_usage"), (int, float)):
+                normalized["emoji_usage"] = float(data["emoji_usage"])
+            if isinstance(data.get("common_particles"), list):
+                normalized["common_particles"] = data["common_particles"]
+            if isinstance(data.get("sample_messages"), list):
+                normalized["sample_messages"] = data["sample_messages"]
+            if isinstance(data.get("sentence_types"), dict):
+                normalized["sentence_types"] = Counter(data["sentence_types"])
+            
+            self.styles[userid] = normalized
+            return normalized
         except Exception as e:
             johalog_logger.error(f"读取用户 {userid} 风格文件失败: {e}")
             return None
+
+    @staticmethod
+    def _default_style() -> Dict[str, Any]:
+        """返回空的用户风格结构"""
+        return {
+            "message_count": 0,
+            "avg_length": 0,
+            "emoji_usage": 0.0,
+            "common_particles": [],
+            "sentence_types": Counter(),
+            "sample_messages": [],
+        }
     
+    @_locked
     def _save_user_to_file(self, userid: str):
         """保存单个用户风格到文件"""
         if userid not in self.styles:
@@ -76,6 +116,7 @@ class StyleLearner:
         except Exception as e:
             johalog_logger.error(f"保存用户 {userid} 风格失败: {e}")
 
+    @_locked
     def save_all(self):
         """保存所有待保存的用户风格"""
         for userid in list(self._dirty):
@@ -109,19 +150,13 @@ class StyleLearner:
 
         return features
 
+    @_locked
     def learn_from_message(self, userid: str, message: str):
         if userid not in self.styles:
             self._load_user_from_file(userid)
 
         if userid not in self.styles:
-            self.styles[userid] = {
-                "message_count": 0,
-                "avg_length": 0,
-                "emoji_usage": 0.0,
-                "common_particles": [],
-                "sentence_types": Counter(),
-                "sample_messages": [],
-            }
+            self.styles[userid] = self._default_style()
 
         user_style = self.styles[userid]
         features = self.analyze_message(message)
@@ -152,6 +187,7 @@ class StyleLearner:
 
         johalog_logger.debug(f"[风格学习] 用户 {userid} 已学习 {n} 条消息")
 
+    @_locked
     def get_user_style_prompt(self, userid: str) -> str:
         if userid not in self.styles:
             self._load_user_from_file(userid)
@@ -193,6 +229,7 @@ class StyleLearner:
             return f"模仿对方说话风格：{'；'.join(style_parts)}。"
         return ""
 
+    @_locked
     def get_sample_messages(self, userid: str, count: int = 3) -> List[str]:
         if userid not in self.styles:
             self._load_user_from_file(userid)
@@ -200,6 +237,7 @@ class StyleLearner:
             return []
         return self.styles[userid]["sample_messages"][-count:]
 
+    @_locked
     def clear_user_style(self, userid: str):
         if userid in self.styles:
             del self.styles[userid]
@@ -215,6 +253,7 @@ class StyleLearner:
         self._dirty.discard(userid)
         johalog_logger.info(f"已清除用户 {userid} 的风格数据")
 
+    @_locked
     def get_user_count(self) -> int:
         return len(self.styles)
 

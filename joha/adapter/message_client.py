@@ -66,41 +66,34 @@ class MessageClient:
         post_type = data.get("post_type")
         message_type = data.get("message_type")
 
-        # 群消息
-        if message_type == "group" or post_type == "message" and data.get("message_type") == "group":
-            try:
-                event = GroupMessageEvent.from_dict(data)
-                asyncio.create_task(self._print_group_message(event))
-                for handler in self._group_message_handlers:
-                    try:
-                        asyncio.create_task(handler(event))
-                    except Exception as e:
-                        logger.error(f"处理群消息事件时出错: {e}", exc_info=True)
-            except Exception as e:
-                logger.error(f"处理群消息时出错: {e}", exc_info=True)
-
-        # 私聊消息
-        elif message_type == "private" or post_type == "message" and data.get("message_type") == "private":
-            try:
-                event = PrivateMessageEvent.from_dict(data)
-                asyncio.create_task(self._print_private_message(event))
-                for handler in self._private_message_handlers:
-                    try:
-                        asyncio.create_task(handler(event))
-                    except Exception as e:
-                        logger.error(f"处理私聊消息事件时出错: {e}", exc_info=True)
-            except Exception as e:
-                logger.error(f"处理私聊消息时出错: {e}", exc_info=True)
+        # 消息事件（群/私聊）
+        if post_type == "message" or (post_type is None and message_type in ("group", "private")):
+            if message_type == "group":
+                try:
+                    event = GroupMessageEvent.from_dict(data)
+                    await self._run_handlers(
+                        [self._print_group_message, *self._group_message_handlers],
+                        event,
+                        "处理群消息事件时出错",
+                    )
+                except Exception as e:
+                    logger.error(f"处理群消息时出错: {e}", exc_info=True)
+            elif message_type == "private":
+                try:
+                    event = PrivateMessageEvent.from_dict(data)
+                    await self._run_handlers(
+                        [self._print_private_message, *self._private_message_handlers],
+                        event,
+                        "处理私聊消息事件时出错",
+                    )
+                except Exception as e:
+                    logger.error(f"处理私聊消息时出错: {e}", exc_info=True)
 
         # 通知事件
         elif post_type == "notice":
             try:
                 event = NoticeEvent.from_dict(data)
-                for handler in self._notice_handlers:
-                    try:
-                        asyncio.create_task(handler(event))
-                    except Exception as e:
-                        logger.error(f"处理通知事件时出错: {e}", exc_info=True)
+                await self._run_handlers(self._notice_handlers, event, "处理通知事件时出错")
             except Exception as e:
                 logger.error(f"处理通知时出错: {e}", exc_info=True)
 
@@ -108,13 +101,22 @@ class MessageClient:
         elif post_type == "request":
             try:
                 event = RequestEvent.from_dict(data)
-                for handler in self._request_handlers:
-                    try:
-                        asyncio.create_task(handler(event))
-                    except Exception as e:
-                        logger.error(f"处理请求事件时出错: {e}", exc_info=True)
+                await self._run_handlers(self._request_handlers, event, "处理请求事件时出错")
             except Exception as e:
                 logger.error(f"处理请求时出错: {e}", exc_info=True)
+
+    async def _run_handlers(
+        self,
+        handlers: List[Callable[[Any], Awaitable[None]]],
+        event: Any,
+        error_label: str,
+    ) -> None:
+        tasks = [asyncio.create_task(handler(event)) for handler in handlers]
+        for task in asyncio.as_completed(tasks):
+            try:
+                await task
+            except Exception as e:
+                logger.error(f"{error_label}: {e}", exc_info=True)
 
     async def _print_group_message(self, event: GroupMessageEvent) -> None:
         """异步打印群消息"""

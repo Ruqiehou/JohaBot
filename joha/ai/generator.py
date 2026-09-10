@@ -135,7 +135,7 @@ class Generator:
     async def chat(self, messages: list, temperature=0.6, max_tokens=1024) -> Optional[str]:
         """异步生成接口"""
         try:
-            result = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 self._cached_chat,
                 self._model,

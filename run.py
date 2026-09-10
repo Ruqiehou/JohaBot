@@ -6,6 +6,9 @@ from joha.adapter import MessageClient, GroupMessageEvent, config_manager
 from joha.core import message_handler, runtime_context
 from joha.core.message_handler import process_merged_message
 from joha.core.message_queue import message_queue_manager
+from joha.managers.user_profile import user_profile_manager
+from joha.managers.style_learner import style_learner
+from joha.decision.cooldown import cooldown_manager
 from joha.core.hot_reload import hot_reloader
 from joha.config.logger import tprint
 
@@ -37,7 +40,7 @@ async def joha_agent(event: GroupMessageEvent):
 
 
 async def _tick_handle_expired() -> None:
-    """主循环 tick：处理超过合并窗口仍未处理的队列消息"""
+    """主循环 tick：处理超时队列消息并定期落盘用户画像"""
     try:
         expired = await message_queue_manager.process_expired()
         for merged in expired:
@@ -45,6 +48,13 @@ async def _tick_handle_expired() -> None:
             await process_merged_message(merged, client.api)
     except Exception as e:
         tprint("warning", f"[过期队列] 处理失败: {e}")
+
+    try:
+        user_profile_manager.save_all()
+        style_learner.save_all()
+        cooldown_manager.save()
+    except Exception as e:
+        tprint("warning", f"[用户数据] 保存失败: {e}")
 
 
 def main() -> None:

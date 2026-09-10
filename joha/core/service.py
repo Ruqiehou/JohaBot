@@ -40,8 +40,6 @@ class MessageContext:
 
     # 决策结果
     should_reply: bool = False
-    action_level: str = "ignore"
-    reply_text: str = ""
 
     # LLM 上下文
     context_messages: list = field(default_factory=list)
@@ -174,13 +172,6 @@ class MessageService:
         self.reply_decisions += 1
 
         ctx.should_reply = result.should_reply
-        ctx.action_level = result.action_level
-        ctx.reply_text = result.reply_text or ""
-
-        if result.reply_text:
-            self.generated_replies += 1
-            ctx.response = result.reply_text
-            return False
 
         if not result.should_reply:
             self.skipped_replies += 1
